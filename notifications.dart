@@ -1,9 +1,40 @@
+import 'dart:ui' show DartPluginRegistrant;
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:timezone/data/latest_all.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
 
+import 'db.dart';
 import 'models.dart';
+
+/// Bumped whenever a notification action changes data, so open screens reload.
+final ValueNotifier<int> dataChanged = ValueNotifier<int>(0);
+
+/// Handles taps on notification action buttons (Done / Log value).
+Future<void> handleNotificationResponse(NotificationResponse r) async {
+  final habitId = int.tryParse(r.payload ?? '');
+  if (habitId == null) return;
+  final today = dateOnly(DateTime.now());
+  if (r.actionId == 'done') {
+    await Db.instance.setEntry(habitId, today, 1);
+  } else if (r.actionId == 'log') {
+    final v = double.tryParse((r.input ?? '').trim().replaceAll(',', '.'));
+    if (v == null) return;
+    await Db.instance.setEntry(habitId, today, v);
+  } else {
+    return; // plain tap on the notification just opens the app
+  }
+  dataChanged.value++;
+}
+
+/// Runs in a background isolate when the app isn't in the foreground.
+@pragma('vm:entry-point')
+Future<void> notificationBackgroundHandler(NotificationResponse r) async {
+  DartPluginRegistrant.ensureInitialized();
+  await handleNotificationResponse(r);
+}
 
 class Notifier {
   Notifier._();
@@ -12,15 +43,31 @@ class Notifier {
   final FlutterLocalNotificationsPlugin _plugin = FlutterLocalNotificationsPlugin();
   bool _ready = false;
 
-  static const NotificationDetails _details = NotificationDetails(
-    android: AndroidNotificationDetails(
-      'habit_reminders',
-      'Habit reminders',
-      channelDescription: 'Reminders for your habits',
-      importance: Importance.high,
-      priority: Priority.high,
-    ),
-  );
+  NotificationDetails _detailsFor(Habit h) {
+    final actions = <AndroidNotificationAction>[
+      if (h.type == HabitType.yesNo)
+        AndroidNotificationAction('done', 'Done', cancelNotification: true)
+      else
+        AndroidNotificationAction(
+          'log',
+          'Log value',
+          cancelNotification: true,
+          inputs: <AndroidNotificationActionInput>[
+            AndroidNotificationActionInput(label: "Today's value"),
+          ],
+        ),
+    ];
+    return NotificationDetails(
+      android: AndroidNotificationDetails(
+        'habit_reminders',
+        'Habit reminders',
+        channelDescription: 'Reminders for your habits',
+        importance: Importance.high,
+        priority: Priority.high,
+        actions: actions,
+      ),
+    );
+  }
 
   Future<void> init() async {
     if (_ready) return;
@@ -34,7 +81,11 @@ class Notifier {
     const settings = InitializationSettings(
       android: AndroidInitializationSettings('@mipmap/ic_launcher'),
     );
-    await _plugin.initialize(settings);
+    await _plugin.initialize(
+      settings,
+      onDidReceiveNotificationResponse: handleNotificationResponse,
+      onDidReceiveBackgroundNotificationResponse: notificationBackgroundHandler,
+    );
     _ready = true;
   }
 
@@ -92,7 +143,8 @@ class Notifier {
           h.name,
           body,
           _next(h.remHour, h.remMinute),
-          _details,
+          _detailsFor(h),
+          payload: '$id',
           androidScheduleMode: mode,
           matchDateTimeComponents: DateTimeComponents.time,
         );
@@ -104,7 +156,8 @@ class Notifier {
             h.name,
             body,
             _next(h.remHour, h.remMinute, weekday: d),
-            _details,
+            _detailsFor(h),
+            payload: '$id',
             androidScheduleMode: mode,
             matchDateTimeComponents: DateTimeComponents.dayOfWeekAndTime,
           );
@@ -117,7 +170,8 @@ class Notifier {
           h.name,
           body,
           _next(h.remHour, h.remMinute, day: h.remDays.first),
-          _details,
+          _detailsFor(h),
+          payload: '$id',
           androidScheduleMode: mode,
           matchDateTimeComponents: DateTimeComponents.dayOfMonthAndTime,
         );
@@ -128,7 +182,8 @@ class Notifier {
           h.name,
           body,
           Duration(minutes: h.remInterval),
-          _details,
+          _detailsFor(h),
+          payload: '$id',
           androidScheduleMode: mode,
         );
         break;

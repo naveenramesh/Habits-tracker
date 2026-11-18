@@ -21,6 +21,7 @@ perms = '''    <uses-permission android:name="android.permission.POST_NOTIFICATI
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
 '''
 receivers = '''        <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver" />
+        <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ActionBroadcastReceiver" />
         <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED"/>

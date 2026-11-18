@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'db.dart';
 import 'models.dart';
+import 'notifications.dart';
 
 Color scoreColor(double? s) {
   if (s == null) return Colors.grey.shade100;
@@ -36,7 +37,14 @@ class _HabitCardState extends State<HabitCard> {
   @override
   void initState() {
     super.initState();
+    dataChanged.addListener(_load);
     _load();
+  }
+
+  @override
+  void dispose() {
+    dataChanged.removeListener(_load);
+    super.dispose();
   }
 
   Future<void> _load() async {
