@@ -15,10 +15,21 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+      - name: Use fixed debug key
+        run: |
+          if [ -f debug.keystore ]; then
+            mkdir -p ~/.android
+            cp debug.keystore ~/.android/debug.keystore
+          fi
       - run: flutter create --platforms=android --project-name habit_tracker app
       - run: cp *.dart app/lib/
-      - run: flutter pub add sqflite path
+      - name: Add packages
         working-directory: app
+        run: |
+          flutter pub add sqflite path timezone "flutter_local_notifications:^19.5.0" "flutter_timezone:^5.1.0"
+      - name: Patch Android config
+        working-directory: app
+        run: python3 ../patch_android.py
       - run: flutter build apk --debug
         working-directory: app
       - uses: actions/upload-artifact@v4
