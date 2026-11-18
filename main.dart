@@ -39,7 +39,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _load();
+    _load(resync: true);
   }
 
   @override
@@ -50,12 +50,17 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _load(); // pick up entries logged from notifications
+    if (state == AppLifecycleState.resumed) _load(resync: true); // pick up entries logged from notifications
   }
 
-  Future<void> _load() async {
+  Future<void> _load({bool resync = false}) async {
     final h = await Db.instance.habits();
     if (mounted) setState(() => habits = h);
+    if (resync) {
+      try {
+        await Notifier.instance.syncAll(h); // keeps reminders current, paused if goal met
+      } catch (_) {}
+    }
   }
 
   Future<void> _open([Habit? h]) async {

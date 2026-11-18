@@ -56,32 +56,90 @@ class _HabitCardState extends State<HabitCard> {
     if (mounted) setState(() => entries = e);
   }
 
-  Future<void> _log(DateTime day) async {
+  void _snack(String msg) =>
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+
+  /// add == true: today's "+" button (numbers are added, text is appended).
+  /// add == false: tapping a heatmap cell (edit the exact total / full text).
+  Future<void> _log(DateTime day, {bool add = false}) async {
     final h = widget.habit;
+    final id = h.id!;
     final cur = entries[dateKey(day)];
+
     if (h.type == HabitType.yesNo) {
-      await Db.instance.setEntry(h.id!, day, cur == null ? 1 : null);
-    } else {
-      final ctl = TextEditingController(text: cur == null ? '' : fmt(cur));
+      await Db.instance.setEntry(id, day, cur == null ? 1 : null);
+    } else if (h.type == HabitType.text) {
+      final existing = add ? '' : await Db.instance.noteFor(id, day);
+      final ctl = TextEditingController(text: existing);
       final res = await showDialog<String>(
         context: context,
         builder: (c) => AlertDialog(
-          title: Text('${h.name} · ${dateKey(day)}'),
+          title: Text(add ? '${h.name}: add a note (text)' : 'Notes for ${dateKey(day)}'),
           content: TextField(
             controller: ctl,
             autofocus: true,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: InputDecoration(suffixText: h.unit),
+            minLines: 2,
+            maxLines: 6,
+            keyboardType: TextInputType.multiline,
+            decoration: InputDecoration(
+              hintText: add ? 'Text to append to today' : 'Edit the full text',
+            ),
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(c, ''), child: const Text('Clear')),
+            if (!add) TextButton(onPressed: () => Navigator.pop(c, ''), child: const Text('Clear')),
             TextButton(onPressed: () => Navigator.pop(c, ctl.text), child: const Text('Save')),
           ],
         ),
       );
       if (res == null) return;
-      await Db.instance.setEntry(h.id!, day, double.tryParse(res.trim()));
+      if (add) {
+        await Db.instance.appendNote(id, day, res);
+      } else {
+        await Db.instance.setNote(id, day, res);
+      }
+    } else {
+      final ctl = TextEditingController(text: add || cur == null ? '' : fmt(cur));
+      final res = await showDialog<String>(
+        context: context,
+        builder: (c) => AlertDialog(
+          title: Text(add ? '${h.name}: add a number' : 'Set total for ${dateKey(day)}'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (add && cur != null) Text('Current total: ${fmt(cur)} ${h.unit}'),
+              TextField(
+                controller: ctl,
+                autofocus: true,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: InputDecoration(
+                  labelText: add ? 'Number to add' : 'Total (number)',
+                  suffixText: h.unit,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            if (!add) TextButton(onPressed: () => Navigator.pop(c, ''), child: const Text('Clear')),
+            TextButton(onPressed: () => Navigator.pop(c, ctl.text), child: const Text('Save')),
+          ],
+        ),
+      );
+      if (res == null) return;
+      final v = double.tryParse(res.trim().replaceAll(',', '.'));
+      if (add) {
+        if (v == null) {
+          if (mounted) _snack('Enter a number');
+          return;
+        }
+        await Db.instance.addToEntry(id, day, v);
+      } else {
+        await Db.instance.setEntry(id, day, v); // empty clears the day
+      }
     }
+
+    try {
+      await Notifier.instance.syncReminders(h); // pauses reminders once the goal is met
+    } catch (_) {}
     await _load();
   }
 
@@ -166,7 +224,7 @@ class _HabitCardState extends State<HabitCard> {
                         Text(h.summary, style: Theme.of(context).textTheme.bodySmall),
                         if (h.remType != ReminderType.none)
                           Text('🔔 ${h.reminderText}', style: Theme.of(context).textTheme.bodySmall),
-                        if (!h.isPeriod && h.type != HabitType.yesNo)
+                        if (!h.isPeriod && h.isNumeric)
                           Text(
                             'Today: ${entries[dateKey(today)] == null ? '-' : fmt(entries[dateKey(today)]!)} ${h.unit}',
                             style: Theme.of(context).textTheme.bodySmall,
@@ -179,8 +237,8 @@ class _HabitCardState extends State<HabitCard> {
                 IconButton(
                   icon: Icon(h.type == HabitType.yesNo
                       ? (doneToday ? Icons.check_circle : Icons.radio_button_unchecked)
-                      : Icons.add_circle_outline),
-                  onPressed: () => _log(today),
+                      : (h.type == HabitType.text ? Icons.edit_note : Icons.add_circle_outline)),
+                  onPressed: () => _log(today, add: true),
                 ),
               ],
             ),

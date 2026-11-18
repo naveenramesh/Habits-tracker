@@ -22,6 +22,8 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
   late ReminderType remType;
   late int remHour;
   late int remMinute;
+  late int remEndHour;
+  late int remEndMinute;
   late Set<int> remDays;
   late final TextEditingController remInterval;
   late final TextEditingController remDay;
@@ -39,6 +41,8 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
     remType = h?.remType ?? ReminderType.none;
     remHour = h?.remHour ?? 8;
     remMinute = h?.remMinute ?? 0;
+    remEndHour = h?.remEndHour ?? 22;
+    remEndMinute = h?.remEndMinute ?? 0;
     remDays = (h != null && h.remType == ReminderType.weekly) ? h.remDays.toSet() : <int>{};
     remInterval = TextEditingController(text: '${h?.remInterval ?? 25}');
     remDay = TextEditingController(
@@ -57,7 +61,8 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
     super.dispose();
   }
 
-  bool get _needsTarget => type != HabitType.yesNo || isPeriodFreq(freq);
+  bool get _needsTarget =>
+      (type != HabitType.yesNo && type != HabitType.text) || isPeriodFreq(freq);
 
   void _snack(String msg) =>
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
@@ -90,6 +95,12 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
     } else if (remType == ReminderType.interval) {
       final m = int.tryParse(remInterval.text.trim());
       if (m == null || m < 1) return _snack('Interval must be at least 1 minute');
+      final startMin = remHour * 60 + remMinute;
+      final endMin = remEndHour * 60 + remEndMinute;
+      if (endMin <= startMin) return _snack('"Until" must be later than "From"');
+      if ((endMin - startMin) ~/ m + 1 > 120) {
+        return _snack('Too many reminders in that window. Use a longer interval or a shorter window.');
+      }
       rInterval = m;
     }
 
@@ -99,11 +110,13 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
       type: type,
       frequency: freq,
       target: t,
-      unit: type == HabitType.yesNo ? 'times' : unit.text.trim(),
+      unit: (type == HabitType.yesNo || type == HabitType.text) ? 'times' : unit.text.trim(),
       days: pickDays ? (days.toList()..sort()) : <int>[],
       remType: remType,
       remHour: remHour,
       remMinute: remMinute,
+      remEndHour: remEndHour,
+      remEndMinute: remEndMinute,
       remInterval: rInterval,
       remDays: rDays,
     );
@@ -152,15 +165,22 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
     );
   }
 
-  Future<void> _pickTime() async {
+  Future<void> _pickTime({bool end = false}) async {
     final t = await showTimePicker(
       context: context,
-      initialTime: TimeOfDay(hour: remHour, minute: remMinute),
+      initialTime: end
+          ? TimeOfDay(hour: remEndHour, minute: remEndMinute)
+          : TimeOfDay(hour: remHour, minute: remMinute),
     );
     if (t != null) {
       setState(() {
-        remHour = t.hour;
-        remMinute = t.minute;
+        if (end) {
+          remEndHour = t.hour;
+          remEndMinute = t.minute;
+        } else {
+          remHour = t.hour;
+          remMinute = t.minute;
+        }
       });
     }
   }
@@ -229,14 +249,14 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
               controller: target,
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
               decoration: InputDecoration(
-                labelText: type == HabitType.yesNo
+                labelText: (type == HabitType.yesNo || type == HabitType.text)
                     ? 'Times per period'
-                    : (type == HabitType.target ? 'Target' : 'Limit'),
+                    : (type == HabitType.target ? 'Target (number)' : 'Limit (number)'),
                 border: const OutlineInputBorder(),
               ),
             ),
           ],
-          if (type != HabitType.yesNo) ...[
+          if (type == HabitType.target || type == HabitType.limit) ...[
             const SizedBox(height: 16),
             TextField(
               controller: unit,
@@ -284,6 +304,26 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
                 labelText: 'Every how many minutes?',
                 border: OutlineInputBorder(),
               ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _pickTime(),
+                    icon: const Icon(Icons.access_time),
+                    label: Text('From ${TimeOfDay(hour: remHour, minute: remMinute).format(context)}'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _pickTime(end: true),
+                    icon: const Icon(Icons.access_time),
+                    label: Text('Until ${TimeOfDay(hour: remEndHour, minute: remEndMinute).format(context)}'),
+                  ),
+                ),
+              ],
             ),
           ],
           if (remType == ReminderType.daily ||
