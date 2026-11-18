@@ -1,0 +1,137 @@
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter_timezone/flutter_timezone.dart';
+import 'package:timezone/data/latest_all.dart' as tz;
+import 'package:timezone/timezone.dart' as tz;
+
+import 'models.dart';
+
+class Notifier {
+  Notifier._();
+  static final Notifier instance = Notifier._();
+
+  final FlutterLocalNotificationsPlugin _plugin = FlutterLocalNotificationsPlugin();
+  bool _ready = false;
+
+  static const NotificationDetails _details = NotificationDetails(
+    android: AndroidNotificationDetails(
+      'habit_reminders',
+      'Habit reminders',
+      channelDescription: 'Reminders for your habits',
+      importance: Importance.high,
+      priority: Priority.high,
+    ),
+  );
+
+  Future<void> init() async {
+    if (_ready) return;
+    tz.initializeTimeZones();
+    try {
+      final info = await FlutterTimezone.getLocalTimezone();
+      tz.setLocalLocation(tz.getLocation(info.identifier));
+    } catch (_) {
+      // Falls back to UTC; reminder times may be off if this fails.
+    }
+    const settings = InitializationSettings(
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+    );
+    await _plugin.initialize(settings);
+    _ready = true;
+  }
+
+  /// Asks for the Android 13+ notification permission. True if allowed.
+  Future<bool> requestPermission() async {
+    try {
+      await init();
+      final android = _plugin.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
+      return await android?.requestNotificationsPermission() ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // Notification ids: habitId * 10 + slot (slot 0, or weekday 1..7).
+  Future<void> cancelFor(int habitId) async {
+    await init();
+    for (var s = 0; s <= 7; s++) {
+      await _plugin.cancel(habitId * 10 + s);
+    }
+  }
+
+  tz.TZDateTime _next(int hour, int minute, {int? weekday, int? day}) {
+    final now = tz.TZDateTime.now(tz.local);
+    var t = tz.TZDateTime(tz.local, now.year, now.month, now.day, hour, minute);
+    if (weekday != null) {
+      while (t.weekday != weekday || !t.isAfter(now)) {
+        t = t.add(const Duration(days: 1));
+      }
+    } else if (day != null) {
+      t = tz.TZDateTime(tz.local, now.year, now.month, day, hour, minute);
+      if (!t.isAfter(now)) {
+        t = tz.TZDateTime(tz.local, now.year, now.month + 1, day, hour, minute);
+      }
+    } else if (!t.isAfter(now)) {
+      t = t.add(const Duration(days: 1));
+    }
+    return t;
+  }
+
+  Future<void> scheduleFor(Habit h) async {
+    await init();
+    final id = h.id!;
+    await cancelFor(id);
+    const mode = AndroidScheduleMode.inexactAllowWhileIdle;
+    const body = 'Time to check in';
+
+    switch (h.remType) {
+      case ReminderType.none:
+        return;
+      case ReminderType.daily:
+        await _plugin.zonedSchedule(
+          id * 10,
+          h.name,
+          body,
+          _next(h.remHour, h.remMinute),
+          _details,
+          androidScheduleMode: mode,
+          matchDateTimeComponents: DateTimeComponents.time,
+        );
+        break;
+      case ReminderType.weekly:
+        for (final d in h.remDays) {
+          await _plugin.zonedSchedule(
+            id * 10 + d,
+            h.name,
+            body,
+            _next(h.remHour, h.remMinute, weekday: d),
+            _details,
+            androidScheduleMode: mode,
+            matchDateTimeComponents: DateTimeComponents.dayOfWeekAndTime,
+          );
+        }
+        break;
+      case ReminderType.monthly:
+        if (h.remDays.isEmpty) return;
+        await _plugin.zonedSchedule(
+          id * 10,
+          h.name,
+          body,
+          _next(h.remHour, h.remMinute, day: h.remDays.first),
+          _details,
+          androidScheduleMode: mode,
+          matchDateTimeComponents: DateTimeComponents.dayOfMonthAndTime,
+        );
+        break;
+      case ReminderType.interval:
+        await _plugin.periodicallyShowWithDuration(
+          id * 10,
+          h.name,
+          body,
+          Duration(minutes: h.remInterval),
+          _details,
+          androidScheduleMode: mode,
+        );
+        break;
+    }
+  }
+}

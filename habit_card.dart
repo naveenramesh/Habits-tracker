@@ -25,6 +25,7 @@ class HabitCard extends StatefulWidget {
 class _HabitCardState extends State<HabitCard> {
   static const weeks = 15;
   Map<String, double> entries = {};
+  bool expanded = false;
 
   DateTime get gridStart {
     final t = dateOnly(DateTime.now());
@@ -142,12 +143,28 @@ class _HabitCardState extends State<HabitCard> {
             Row(
               children: [
                 Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(h.name, style: Theme.of(context).textTheme.titleMedium),
-                      Text(h.summary, style: Theme.of(context).textTheme.bodySmall),
-                    ],
+                  child: InkWell(
+                    onTap: h.isPeriod ? null : () => setState(() => expanded = !expanded),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Flexible(child: Text(h.name, style: Theme.of(context).textTheme.titleMedium)),
+                            if (!h.isPeriod)
+                              Icon(expanded ? Icons.expand_less : Icons.expand_more, size: 20),
+                          ],
+                        ),
+                        Text(h.summary, style: Theme.of(context).textTheme.bodySmall),
+                        if (h.remType != ReminderType.none)
+                          Text('🔔 ${h.reminderText}', style: Theme.of(context).textTheme.bodySmall),
+                        if (!h.isPeriod && h.type != HabitType.yesNo)
+                          Text(
+                            'Today: ${entries[dateKey(today)] == null ? '-' : fmt(entries[dateKey(today)]!)} ${h.unit}',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                      ],
+                    ),
                   ),
                 ),
                 IconButton(icon: const Icon(Icons.edit_outlined), onPressed: widget.onEdit),
@@ -159,8 +176,8 @@ class _HabitCardState extends State<HabitCard> {
                 ),
               ],
             ),
-            const SizedBox(height: 12),
-            h.isPeriod ? _progress() : _heatmap(),
+            if (h.isPeriod || expanded) const SizedBox(height: 12),
+            if (h.isPeriod) _progress() else if (expanded) _heatmap(),
           ],
         ),
       ),

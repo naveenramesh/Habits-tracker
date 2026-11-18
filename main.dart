@@ -4,8 +4,15 @@ import 'db.dart';
 import 'habit_card.dart';
 import 'habit_form.dart';
 import 'models.dart';
+import 'notifications.dart';
 
-void main() => runApp(const HabitApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  try {
+    await Notifier.instance.init();
+  } catch (_) {}
+  runApp(const HabitApp());
+}
 
 class HabitApp extends StatelessWidget {
   const HabitApp({super.key});

@@ -2,6 +2,16 @@ enum HabitType { yesNo, target, limit }
 
 enum Frequency { daily, weekdays, monthDays, weekly, monthly, quarterly, yearly }
 
+enum ReminderType { none, daily, weekly, monthly, interval }
+
+const reminderNames = {
+  ReminderType.none: 'Off',
+  ReminderType.daily: 'Every day at a time',
+  ReminderType.weekly: 'Selected days of week at a time',
+  ReminderType.monthly: 'Monthly on a day',
+  ReminderType.interval: 'Repeat every N minutes',
+};
+
 const weekdayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 const typeNames = {
@@ -47,6 +57,13 @@ class Habit {
   /// Weekdays (Mon=1..Sun=7) or month days (1..31), depending on frequency.
   final List<int> days;
 
+  /// Reminder settings. remDays = weekdays (weekly) or [day of month] (monthly).
+  final ReminderType remType;
+  final int remHour;
+  final int remMinute;
+  final int remInterval; // minutes, for interval reminders
+  final List<int> remDays;
+
   Habit({
     this.id,
     required this.name,
@@ -55,7 +72,46 @@ class Habit {
     required this.target,
     required this.unit,
     required this.days,
+    this.remType = ReminderType.none,
+    this.remHour = 8,
+    this.remMinute = 0,
+    this.remInterval = 25,
+    this.remDays = const [],
   });
+
+  Habit withId(int newId) => Habit(
+        id: newId,
+        name: name,
+        type: type,
+        frequency: frequency,
+        target: target,
+        unit: unit,
+        days: days,
+        remType: remType,
+        remHour: remHour,
+        remMinute: remMinute,
+        remInterval: remInterval,
+        remDays: remDays,
+      );
+
+  String get reminderText {
+    final hh = remHour.toString().padLeft(2, '0');
+    final mm = remMinute.toString().padLeft(2, '0');
+    switch (remType) {
+      case ReminderType.none:
+        return '';
+      case ReminderType.daily:
+        return 'Daily at $hh:$mm';
+      case ReminderType.weekly:
+        final names = remDays.map((d) => weekdayNames[d - 1]).join(', ');
+        return '$names at $hh:$mm';
+      case ReminderType.monthly:
+        final day = remDays.isEmpty ? '' : '${remDays.first}';
+        return 'Day $day of month at $hh:$mm';
+      case ReminderType.interval:
+        return 'Every $remInterval min';
+    }
+  }
 
   bool get isPeriod => isPeriodFreq(frequency);
 
@@ -67,11 +123,22 @@ class Habit {
         'target': target,
         'unit': unit,
         'days': days.join(','),
+        'rem_type': remType.index,
+        'rem_hour': remHour,
+        'rem_minute': remMinute,
+        'rem_interval': remInterval,
+        'rem_days': remDays.join(','),
       };
 
   factory Habit.fromMap(Map<String, Object?> m) {
     final raw = m['days'] as String;
+    final remRaw = (m['rem_days'] as String?) ?? '';
     return Habit(
+      remType: ReminderType.values[(m['rem_type'] as int?) ?? 0],
+      remHour: (m['rem_hour'] as int?) ?? 8,
+      remMinute: (m['rem_minute'] as int?) ?? 0,
+      remInterval: (m['rem_interval'] as int?) ?? 25,
+      remDays: remRaw.isEmpty ? <int>[] : remRaw.split(',').map(int.parse).toList(),
       id: m['id'] as int?,
       name: m['name'] as String,
       type: HabitType.values[m['type'] as int],

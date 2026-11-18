@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'db.dart';
 import 'models.dart';
+import 'notifications.dart';
 
 class HabitFormScreen extends StatefulWidget {
   final Habit? habit;
@@ -18,6 +19,12 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
   late HabitType type;
   late Frequency freq;
   late Set<int> days;
+  late ReminderType remType;
+  late int remHour;
+  late int remMinute;
+  late Set<int> remDays;
+  late final TextEditingController remInterval;
+  late final TextEditingController remDay;
 
   @override
   void initState() {
@@ -29,6 +36,15 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
     type = h?.type ?? HabitType.yesNo;
     freq = h?.frequency ?? Frequency.daily;
     days = {...?h?.days};
+    remType = h?.remType ?? ReminderType.none;
+    remHour = h?.remHour ?? 8;
+    remMinute = h?.remMinute ?? 0;
+    remDays = (h != null && h.remType == ReminderType.weekly) ? h.remDays.toSet() : <int>{};
+    remInterval = TextEditingController(text: '${h?.remInterval ?? 25}');
+    remDay = TextEditingController(
+        text: (h != null && h.remType == ReminderType.monthly && h.remDays.isNotEmpty)
+            ? '${h.remDays.first}'
+            : '1');
   }
 
   @override
@@ -36,6 +52,8 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
     name.dispose();
     target.dispose();
     unit.dispose();
+    remInterval.dispose();
+    remDay.dispose();
     super.dispose();
   }
 
@@ -60,6 +78,21 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
     final pickDays = freq == Frequency.weekdays || freq == Frequency.monthDays;
     if (pickDays && days.isEmpty) return _snack('Pick at least one day');
 
+    var rDays = <int>[];
+    var rInterval = 25;
+    if (remType == ReminderType.weekly) {
+      if (remDays.isEmpty) return _snack('Pick at least one reminder day');
+      rDays = remDays.toList()..sort();
+    } else if (remType == ReminderType.monthly) {
+      final day = int.tryParse(remDay.text.trim());
+      if (day == null || day < 1 || day > 28) return _snack('Reminder day must be 1-28');
+      rDays = [day];
+    } else if (remType == ReminderType.interval) {
+      final m = int.tryParse(remInterval.text.trim());
+      if (m == null || m < 1) return _snack('Interval must be at least 1 minute');
+      rInterval = m;
+    }
+
     final h = Habit(
       id: widget.habit?.id,
       name: n,
@@ -68,8 +101,18 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
       target: t,
       unit: type == HabitType.yesNo ? 'times' : unit.text.trim(),
       days: pickDays ? (days.toList()..sort()) : <int>[],
+      remType: remType,
+      remHour: remHour,
+      remMinute: remMinute,
+      remInterval: rInterval,
+      remDays: rDays,
     );
-    await Db.instance.saveHabit(h);
+    final id = await Db.instance.saveHabit(h);
+    if (remType != ReminderType.none) {
+      final ok = await Notifier.instance.requestPermission();
+      if (!ok && mounted) _snack('Notifications are blocked. Enable them in Android settings.');
+    }
+    await Notifier.instance.scheduleFor(h.withId(id));
     if (mounted) Navigator.pop(context, true);
   }
 
@@ -86,6 +129,7 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
       ),
     );
     if (ok != true) return;
+    await Notifier.instance.cancelFor(widget.habit!.id!);
     await Db.instance.deleteHabit(widget.habit!.id!);
     if (mounted) Navigator.pop(context, true);
   }
@@ -106,6 +150,19 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _pickTime() async {
+    final t = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay(hour: remHour, minute: remMinute),
+    );
+    if (t != null) {
+      setState(() {
+        remHour = t.hour;
+        remMinute = t.minute;
+      });
+    }
   }
 
   Widget _dayPicker() {
@@ -187,6 +244,56 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
                 labelText: 'Unit (steps, hours, litres...)',
                 border: OutlineInputBorder(),
               ),
+            ),
+          ],
+          const SizedBox(height: 24),
+          const Divider(),
+          const SizedBox(height: 8),
+          _dropdown<ReminderType>('Reminder', remType, reminderNames, (v) => setState(() => remType = v)),
+          if (remType == ReminderType.weekly) ...[
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 6,
+              children: [
+                for (var i = 1; i <= 7; i++)
+                  FilterChip(
+                    label: Text(weekdayNames[i - 1]),
+                    selected: remDays.contains(i),
+                    onSelected: (s) => setState(() => s ? remDays.add(i) : remDays.remove(i)),
+                  ),
+              ],
+            ),
+          ],
+          if (remType == ReminderType.monthly) ...[
+            const SizedBox(height: 12),
+            TextField(
+              controller: remDay,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'Day of month (1-28)',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+          if (remType == ReminderType.interval) ...[
+            const SizedBox(height: 12),
+            TextField(
+              controller: remInterval,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'Every how many minutes?',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+          if (remType == ReminderType.daily ||
+              remType == ReminderType.weekly ||
+              remType == ReminderType.monthly) ...[
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: _pickTime,
+              icon: const Icon(Icons.access_time),
+              label: Text('Time: ${TimeOfDay(hour: remHour, minute: remMinute).format(context)}'),
             ),
           ],
           const SizedBox(height: 24),

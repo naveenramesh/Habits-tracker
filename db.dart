@@ -15,12 +15,21 @@ class Db {
     final path = join(await getDatabasesPath(), 'habits.db');
     return openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: (d, v) async {
         await d.execute(
-            'CREATE TABLE habits(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, type INTEGER NOT NULL, frequency INTEGER NOT NULL, target REAL NOT NULL, unit TEXT NOT NULL, days TEXT NOT NULL)');
+            'CREATE TABLE habits(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, type INTEGER NOT NULL, frequency INTEGER NOT NULL, target REAL NOT NULL, unit TEXT NOT NULL, days TEXT NOT NULL, rem_type INTEGER NOT NULL DEFAULT 0, rem_hour INTEGER NOT NULL DEFAULT 8, rem_minute INTEGER NOT NULL DEFAULT 0, rem_interval INTEGER NOT NULL DEFAULT 25, rem_days TEXT NOT NULL DEFAULT \'\')');
         await d.execute(
             'CREATE TABLE entries(habit_id INTEGER NOT NULL, date TEXT NOT NULL, value REAL NOT NULL, PRIMARY KEY(habit_id, date))');
+      },
+      onUpgrade: (d, oldV, newV) async {
+        if (oldV < 2) {
+          await d.execute('ALTER TABLE habits ADD COLUMN rem_type INTEGER NOT NULL DEFAULT 0');
+          await d.execute('ALTER TABLE habits ADD COLUMN rem_hour INTEGER NOT NULL DEFAULT 8');
+          await d.execute('ALTER TABLE habits ADD COLUMN rem_minute INTEGER NOT NULL DEFAULT 0');
+          await d.execute('ALTER TABLE habits ADD COLUMN rem_interval INTEGER NOT NULL DEFAULT 25');
+          await d.execute("ALTER TABLE habits ADD COLUMN rem_days TEXT NOT NULL DEFAULT ''");
+        }
       },
     );
   }
@@ -31,13 +40,14 @@ class Db {
     return rows.map(Habit.fromMap).toList();
   }
 
-  Future<void> saveHabit(Habit h) async {
+  /// Saves the habit and returns its id.
+  Future<int> saveHabit(Habit h) async {
     final d = await db;
     if (h.id == null) {
-      await d.insert('habits', h.toMap());
-    } else {
-      await d.update('habits', h.toMap(), where: 'id = ?', whereArgs: [h.id]);
+      return d.insert('habits', h.toMap());
     }
+    await d.update('habits', h.toMap(), where: 'id = ?', whereArgs: [h.id]);
+    return h.id!;
   }
 
   Future<void> deleteHabit(int id) async {
