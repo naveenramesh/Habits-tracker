@@ -24,6 +24,7 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
   late int remMinute;
   late int remEndHour;
   late int remEndMinute;
+  late int colorIndex;
   late Set<int> remDays;
   late final TextEditingController remInterval;
   late final TextEditingController remDay;
@@ -43,6 +44,8 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
     remMinute = h?.remMinute ?? 0;
     remEndHour = h?.remEndHour ?? 22;
     remEndMinute = h?.remEndMinute ?? 0;
+    colorIndex = h == null ? 0 : (h.colorIndex >= 0 ? h.colorIndex : h.id! % habitPalette.length);
+    if (h == null) _pickUnusedColor();
     remDays = (h != null && h.remType == ReminderType.weekly) ? h.remDays.toSet() : <int>{};
     remInterval = TextEditingController(text: '${h?.remInterval ?? 25}');
     remDay = TextEditingController(
@@ -59,6 +62,13 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
     remInterval.dispose();
     remDay.dispose();
     super.dispose();
+  }
+
+  /// New habits start with a colour no other habit uses yet.
+  Future<void> _pickUnusedColor() async {
+    final used = (await Db.instance.habits()).map((x) => x.color).toSet();
+    final free = habitPalette.indexWhere((c) => !used.contains(c));
+    if (free >= 0 && mounted) setState(() => colorIndex = free);
   }
 
   bool get _needsTarget =>
@@ -117,6 +127,7 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
       remMinute: remMinute,
       remEndHour: remEndHour,
       remEndMinute: remEndMinute,
+      colorIndex: colorIndex,
       remInterval: rInterval,
       remDays: rDays,
     );
@@ -125,7 +136,7 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
       final ok = await Notifier.instance.requestPermission();
       if (!ok && mounted) _snack('Notifications are blocked. Enable them in Android settings.');
     }
-    await Notifier.instance.scheduleFor(h.withId(id));
+    await Notifier.instance.syncReminders(h.withId(id));
     if (mounted) Navigator.pop(context, true);
   }
 
@@ -231,6 +242,24 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
           TextField(
             controller: name,
             decoration: const InputDecoration(labelText: 'Name', border: OutlineInputBorder()),
+          ),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              for (var i = 0; i < habitPalette.length; i++)
+                GestureDetector(
+                  onTap: () => setState(() => colorIndex = i),
+                  child: CircleAvatar(
+                    radius: 16,
+                    backgroundColor: habitPalette[i],
+                    child: colorIndex == i
+                        ? const Icon(Icons.check, size: 18, color: Colors.white)
+                        : null,
+                  ),
+                ),
+            ],
           ),
           const SizedBox(height: 16),
           _dropdown<HabitType>('Type', type, typeNames, (v) => setState(() => type = v)),

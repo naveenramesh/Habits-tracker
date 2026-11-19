@@ -4,13 +4,13 @@ import 'db.dart';
 import 'models.dart';
 import 'notifications.dart';
 
-Color scoreColor(double? s) {
+Color scoreColor(double? s, Color base) {
   if (s == null) return Colors.grey.shade100;
   if (s <= 0) return Colors.grey.shade300;
-  if (s < 50) return Colors.green.shade100;
-  if (s < 100) return Colors.green.shade300;
-  if (s < 100.0001) return Colors.green.shade600;
-  return Colors.green.shade900; // above 100%
+  if (s < 50) return Color.lerp(Colors.white, base, 0.3)!;
+  if (s < 100) return Color.lerp(Colors.white, base, 0.6)!;
+  if (s < 100.0001) return base;
+  return Color.lerp(base, Colors.black, 0.35)!; // above 100%
 }
 
 class HabitCard extends StatefulWidget {
@@ -166,7 +166,7 @@ class _HabitCardState extends State<HabitCard> {
               final score = h.dayScore(d, entries[dateKey(d)]);
               return GestureDetector(
                 onTap: () => _log(d),
-                child: _cell(scoreColor(score)),
+                child: _cell(scoreColor(score, h.color)),
               );
             }),
           );
@@ -186,7 +186,7 @@ class _HabitCardState extends State<HabitCard> {
         LinearProgressIndicator(
           value: pct.clamp(0.0, 1.0).toDouble(),
           minHeight: 10,
-          color: over ? Colors.red : Colors.green,
+          color: over ? Colors.red : h.color,
         ),
         const SizedBox(height: 4),
         Text('${fmt(total)} / ${fmt(h.target)} ${h.unit}  (${(pct * 100).round()}%)  ·  ${h.periodLabel}'),
@@ -216,6 +216,12 @@ class _HabitCardState extends State<HabitCard> {
                       children: [
                         Row(
                           children: [
+                            Container(
+                              width: 12,
+                              height: 12,
+                              margin: const EdgeInsets.only(right: 8),
+                              decoration: BoxDecoration(color: h.color, shape: BoxShape.circle),
+                            ),
                             Flexible(child: Text(h.name, style: Theme.of(context).textTheme.titleMedium)),
                             if (!h.isPeriod)
                               Icon(expanded ? Icons.expand_less : Icons.expand_more, size: 20),
@@ -235,6 +241,7 @@ class _HabitCardState extends State<HabitCard> {
                 ),
                 IconButton(icon: const Icon(Icons.edit_outlined), onPressed: widget.onEdit),
                 IconButton(
+                  color: h.color,
                   icon: Icon(h.type == HabitType.yesNo
                       ? (doneToday ? Icons.check_circle : Icons.radio_button_unchecked)
                       : (h.type == HabitType.text ? Icons.edit_note : Icons.add_circle_outline)),

@@ -1,4 +1,20 @@
+import 'dart:ui' show Color;
+
 enum HabitType { yesNo, target, limit, text }
+
+/// One colour per habit (red is left out: it marks "over the limit").
+const habitPalette = <Color>[
+  Color(0xFF2E7D32), // green
+  Color(0xFF1565C0), // blue
+  Color(0xFFEF6C00), // orange
+  Color(0xFF6A1B9A), // purple
+  Color(0xFF00838F), // teal
+  Color(0xFFAD1457), // pink
+  Color(0xFF3949AB), // indigo
+  Color(0xFFF9A825), // amber
+  Color(0xFF6D4C41), // brown
+  Color(0xFF827717), // olive
+];
 
 enum Frequency { daily, weekdays, monthDays, weekly, monthly, quarterly, yearly }
 
@@ -67,6 +83,9 @@ class Habit {
   final int remEndHour; // interval reminders run from remHour:remMinute until this time
   final int remEndMinute;
 
+  /// Index into habitPalette; -1 means pick one automatically from the id.
+  final int colorIndex;
+
   Habit({
     this.id,
     required this.name,
@@ -82,6 +101,7 @@ class Habit {
     this.remDays = const [],
     this.remEndHour = 22,
     this.remEndMinute = 0,
+    this.colorIndex = -1,
   });
 
   Habit withId(int newId) => Habit(
@@ -99,6 +119,7 @@ class Habit {
         remDays: remDays,
         remEndHour: remEndHour,
         remEndMinute: remEndMinute,
+        colorIndex: colorIndex,
       );
 
   String get reminderText {
@@ -124,6 +145,9 @@ class Habit {
 
   bool get isPeriod => isPeriodFreq(frequency);
 
+  Color get color =>
+      habitPalette[(colorIndex >= 0 ? colorIndex : (id ?? 0)) % habitPalette.length];
+
   bool get isNumeric => type == HabitType.target || type == HabitType.limit;
 
   Map<String, Object?> toMap() => <String, Object?>{
@@ -141,6 +165,7 @@ class Habit {
         'rem_days': remDays.join(','),
         'rem_end_hour': remEndHour,
         'rem_end_minute': remEndMinute,
+        'color_index': colorIndex,
       };
 
   factory Habit.fromMap(Map<String, Object?> m) {
@@ -153,6 +178,7 @@ class Habit {
       remInterval: (m['rem_interval'] as int?) ?? 25,
       remEndHour: (m['rem_end_hour'] as int?) ?? 22,
       remEndMinute: (m['rem_end_minute'] as int?) ?? 0,
+      colorIndex: (m['color_index'] as int?) ?? -1,
       remDays: remRaw.isEmpty ? <int>[] : remRaw.split(',').map(int.parse).toList(),
       id: m['id'] as int?,
       name: m['name'] as String,

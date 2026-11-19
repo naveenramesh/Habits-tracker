@@ -15,12 +15,13 @@ class Db {
     final path = join(await getDatabasesPath(), 'habits.db');
     return openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: (d, v) async {
         await d.execute(
-            'CREATE TABLE habits(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, type INTEGER NOT NULL, frequency INTEGER NOT NULL, target REAL NOT NULL, unit TEXT NOT NULL, days TEXT NOT NULL, rem_type INTEGER NOT NULL DEFAULT 0, rem_hour INTEGER NOT NULL DEFAULT 8, rem_minute INTEGER NOT NULL DEFAULT 0, rem_interval INTEGER NOT NULL DEFAULT 25, rem_days TEXT NOT NULL DEFAULT \'\', rem_end_hour INTEGER NOT NULL DEFAULT 22, rem_end_minute INTEGER NOT NULL DEFAULT 0)');
+            'CREATE TABLE habits(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, type INTEGER NOT NULL, frequency INTEGER NOT NULL, target REAL NOT NULL, unit TEXT NOT NULL, days TEXT NOT NULL, rem_type INTEGER NOT NULL DEFAULT 0, rem_hour INTEGER NOT NULL DEFAULT 8, rem_minute INTEGER NOT NULL DEFAULT 0, rem_interval INTEGER NOT NULL DEFAULT 25, rem_days TEXT NOT NULL DEFAULT \'\', rem_end_hour INTEGER NOT NULL DEFAULT 22, rem_end_minute INTEGER NOT NULL DEFAULT 0, color_index INTEGER NOT NULL DEFAULT -1)');
         await d.execute(
             'CREATE TABLE entries(habit_id INTEGER NOT NULL, date TEXT NOT NULL, value REAL NOT NULL, note TEXT NOT NULL DEFAULT \'\', PRIMARY KEY(habit_id, date))');
+        await d.execute('CREATE TABLE reminder_state(habit_id INTEGER PRIMARY KEY, paused_until TEXT NOT NULL)');
       },
       onUpgrade: (d, oldV, newV) async {
         if (oldV < 2) {
@@ -34,6 +35,10 @@ class Db {
           await d.execute('ALTER TABLE habits ADD COLUMN rem_end_hour INTEGER NOT NULL DEFAULT 22');
           await d.execute('ALTER TABLE habits ADD COLUMN rem_end_minute INTEGER NOT NULL DEFAULT 0');
           await d.execute("ALTER TABLE entries ADD COLUMN note TEXT NOT NULL DEFAULT ''");
+        }
+        if (oldV < 4) {
+          await d.execute('ALTER TABLE habits ADD COLUMN color_index INTEGER NOT NULL DEFAULT -1');
+          await d.execute('CREATE TABLE IF NOT EXISTS reminder_state(habit_id INTEGER PRIMARY KEY, paused_until TEXT NOT NULL)');
         }
       },
     );
@@ -58,6 +63,7 @@ class Db {
   Future<void> deleteHabit(int id) async {
     final d = await db;
     await d.delete('entries', where: 'habit_id = ?', whereArgs: [id]);
+    await d.delete('reminder_state', where: 'habit_id = ?', whereArgs: [id]);
     await d.delete('habits', where: 'id = ?', whereArgs: [id]);
   }
 
@@ -72,6 +78,20 @@ class Db {
     return {
       for (final r in rows) r['date'] as String: (r['value'] as num).toDouble()
     };
+  }
+
+  /// Reminders are paused until this day (set by the "Stop today" button).
+  Future<DateTime?> pausedUntil(int habitId) async {
+    final d = await db;
+    final rows = await d.query('reminder_state', where: 'habit_id = ?', whereArgs: [habitId]);
+    if (rows.isEmpty) return null;
+    return DateTime.tryParse(rows.first['paused_until'] as String);
+  }
+
+  Future<void> setPausedUntil(int habitId, DateTime day) async {
+    final d = await db;
+    await d.insert('reminder_state', {'habit_id': habitId, 'paused_until': dateKey(day)},
+        conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   Future<Habit?> habit(int id) async {

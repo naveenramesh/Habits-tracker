@@ -82,8 +82,10 @@ Future<void> handleNotificationResponse(NotificationResponse r) async {
 
   final met = !stop && await isGoalMet(h);
   if (stop || met) {
-    final tomorrow = DateTime(today.year, today.month, today.day + 1);
-    await n.scheduleFor(h, resumeOn: stop ? tomorrow : resumeDate(h)); // also clears the shown reminder
+    if (stop) {
+      await Db.instance.setPausedUntil(habitId, DateTime(today.year, today.month, today.day + 1));
+    }
+    await n.syncReminders(h); // re-schedules with the pause applied; also clears the shown reminder
     msg = stop ? 'Reminders paused until tomorrow.' : '$msg Goal reached - reminders paused.';
     await n.feedback(h, msg);
   } else {
@@ -154,6 +156,7 @@ class Notifier {
         importance: Importance.high,
         priority: Priority.high,
         actions: actions,
+        color: h.color,
       ),
     );
   }
@@ -219,90 +222,120 @@ class Notifier {
     }
   }
 
-  /// Next time matching hour:minute (and weekday / day of month) that is in the
-  /// future and not before [resumeOn].
-  tz.TZDateTime _next(int hour, int minute, {int? weekday, int? day, DateTime? resumeOn}) {
-    final now = tz.TZDateTime.now(tz.local);
-    var from = now;
-    if (resumeOn != null) {
-      final r = tz.TZDateTime(tz.local, resumeOn.year, resumeOn.month, resumeOn.day);
-      if (r.isAfter(from)) from = r;
+  static const int _maxAlarms = 100;
+  DateTime? _lastSyncAll;
+
+  static const NotificationDetails _noticeDetails = NotificationDetails(
+    android: AndroidNotificationDetails(
+      'habit_reminders',
+      'Habit reminders',
+      channelDescription: 'Reminders for your habits',
+      importance: Importance.high,
+      priority: Priority.high,
+    ),
+  );
+
+  /// Minutes after midnight at which the habit reminds on a matching day.
+  List<int> _minutesOfDay(Habit h) {
+    final start = h.remHour * 60 + h.remMinute;
+    if (h.remType != ReminderType.interval) return [start];
+    final end = h.remEndHour * 60 + h.remEndMinute;
+    final step = h.remInterval < 1 ? 1 : h.remInterval;
+    final out = <int>[];
+    for (var m = start; m <= end && out.length < _maxAlarms; m += step) {
+      out.add(m);
     }
-    var t = tz.TZDateTime(tz.local, from.year, from.month, from.day, hour, minute);
-    for (var i = 0; i < 400; i++) {
-      final okWeekday = weekday == null || t.weekday == weekday;
-      final okDay = day == null || t.day == day;
-      if (okWeekday && okDay && t.isAfter(now) && !t.isBefore(from)) return t;
-      t = tz.TZDateTime(tz.local, t.year, t.month, t.day + 1, hour, minute);
-    }
-    return t;
+    return out;
   }
 
-  /// Schedules the habit's reminders. Every reminder is a repeating "at this
-  /// time of day" alarm, so nothing needs the app to be opened again.
-  /// [resumeOn] delays the first reminder (used to pause after the goal is met).
+  bool _matchesDay(Habit h, DateTime d) {
+    switch (h.remType) {
+      case ReminderType.weekly:
+        return h.remDays.contains(d.weekday);
+      case ReminderType.monthly:
+        return h.remDays.isNotEmpty && d.day == h.remDays.first;
+      default:
+        return true;
+    }
+  }
+
+  /// Schedules the habit's upcoming reminders as individual one-time alarms
+  /// (the plugin's repeating alarms ignore the start date, so they can't be
+  /// paused). [resumeOn] skips every day before it. The list is refreshed
+  /// whenever the app opens or you log something; if nothing refreshes it, a
+  /// last notification asks you to open the app.
   Future<void> scheduleFor(Habit h, {DateTime? resumeOn}) async {
     await init();
     final id = h.id!;
     await cancelFor(id);
     if (h.remType == ReminderType.none) return;
 
+    final now = tz.TZDateTime.now(tz.local);
+    var firstDay = tz.TZDateTime(tz.local, now.year, now.month, now.day);
+    if (resumeOn != null) {
+      final r = tz.TZDateTime(tz.local, resumeOn.year, resumeOn.month, resumeOn.day);
+      if (r.isAfter(firstDay)) firstDay = r;
+    }
+    final horizonDays = h.remType == ReminderType.monthly
+        ? 366
+        : (h.remType == ReminderType.weekly ? 70 : (h.remType == ReminderType.daily ? 30 : 14));
+    final times = _minutesOfDay(h);
     const mode = AndroidScheduleMode.inexactAllowWhileIdle;
     final base = id * 1000;
+    var slot = 0;
+    tz.TZDateTime? last;
 
-    Future<void> put(int slot, int hour, int minute, DateTimeComponents match,
-        {int? weekday, int? day}) {
-      return _plugin.zonedSchedule(
-        base + slot,
-        h.name,
-        'Time to check in',
-        _next(hour, minute, weekday: weekday, day: day, resumeOn: resumeOn),
-        _detailsFor(h),
+    for (var i = 0; i < horizonDays && slot < _maxAlarms; i++) {
+      final day = tz.TZDateTime(tz.local, firstDay.year, firstDay.month, firstDay.day + i);
+      if (!_matchesDay(h, day)) continue;
+      for (final m in times) {
+        if (slot >= _maxAlarms) break;
+        final t = tz.TZDateTime(tz.local, day.year, day.month, day.day, m ~/ 60, m % 60);
+        if (!t.isAfter(now)) continue;
+        await _plugin.zonedSchedule(
+          base + slot,
+          h.name,
+          'Time to check in',
+          t,
+          _detailsFor(h),
+          payload: '$id',
+          androidScheduleMode: mode,
+        );
+        slot++;
+        last = t;
+      }
+    }
+
+    if (last != null) {
+      await _plugin.zonedSchedule(
+        base + 998,
+        'Habits',
+        'Open the app to keep "${h.name}" reminders going.',
+        last.add(const Duration(minutes: 1)),
+        _noticeDetails,
         payload: '$id',
         androidScheduleMode: mode,
-        matchDateTimeComponents: match,
       );
     }
-
-    switch (h.remType) {
-      case ReminderType.none:
-        return;
-      case ReminderType.daily:
-        await put(0, h.remHour, h.remMinute, DateTimeComponents.time);
-        break;
-      case ReminderType.weekly:
-        for (final d in h.remDays) {
-          await put(d, h.remHour, h.remMinute, DateTimeComponents.dayOfWeekAndTime, weekday: d);
-        }
-        break;
-      case ReminderType.monthly:
-        if (h.remDays.isNotEmpty) {
-          await put(0, h.remHour, h.remMinute, DateTimeComponents.dayOfMonthAndTime,
-              day: h.remDays.first);
-        }
-        break;
-      case ReminderType.interval:
-        {
-          final start = h.remHour * 60 + h.remMinute;
-          final end = h.remEndHour * 60 + h.remEndMinute;
-          var slot = 0;
-          for (var m = start; m <= end && slot < 200; m += h.remInterval) {
-            await put(slot, m ~/ 60, m % 60, DateTimeComponents.time);
-            slot++;
-          }
-          break;
-        }
-    }
   }
 
-  /// Re-schedules one habit, paused if its goal is already reached.
+  /// Re-schedules one habit, honouring "Stop today" and a reached goal.
   Future<void> syncReminders(Habit h) async {
-    if (h.remType == ReminderType.none) return;
-    final met = await isGoalMet(h);
-    await scheduleFor(h, resumeOn: met ? resumeDate(h) : null);
+    final id = h.id!;
+    if (h.remType == ReminderType.none) {
+      await cancelFor(id);
+      return;
+    }
+    DateTime? resume = (await isGoalMet(h)) ? resumeDate(h) : null;
+    final paused = await Db.instance.pausedUntil(id);
+    if (paused != null && (resume == null || paused.isAfter(resume))) resume = paused;
+    await scheduleFor(h, resumeOn: resume);
   }
 
-  Future<void> syncAll(List<Habit> habits) async {
+  Future<void> syncAll(List<Habit> habits, {bool force = false}) async {
+    final last = _lastSyncAll;
+    if (!force && last != null && DateTime.now().difference(last).inMinutes < 10) return;
+    _lastSyncAll = DateTime.now();
     for (final h in habits) {
       await syncReminders(h);
     }
