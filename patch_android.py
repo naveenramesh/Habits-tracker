@@ -17,7 +17,9 @@ p.write_text(s)
 # 2) Manifest: permissions + notification receivers
 m = pathlib.Path('android/app/src/main/AndroidManifest.xml')
 x = m.read_text()
-perms = '''    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+perms = '''    <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" android:maxSdkVersion="32"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
 '''
 receivers = '''        <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver" />

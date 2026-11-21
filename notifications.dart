@@ -1,6 +1,7 @@
 import 'dart:ui' show DartPluginRegistrant;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:timezone/data/latest_all.dart' as tz;
@@ -42,54 +43,49 @@ Future<void> handleNotificationResponse(NotificationResponse r) async {
   final habitId = int.tryParse(r.payload ?? '');
   final action = r.actionId;
   if (habitId == null || action == null || action.isEmpty) return; // plain tap opens the app
+
+  // Close the notification straight away; everything else happens behind the scenes.
+  final n = Notifier.instance;
+  await n._initPlugin();
+  final shownId = r.id;
+  if (shownId != null) await n._plugin.cancel(shownId);
+
   final h = await Db.instance.habit(habitId);
   if (h == null) return;
-
-  final n = Notifier.instance;
   await n.init();
+  await Db.instance.loadCategories();
+
   final today = dateOnly(DateTime.now());
-  final shownId = r.id ?? (habitId * 1000 + 999);
   final stop = action == 'stop';
-  var msg = '';
+  final repostId = shownId ?? (habitId * 1000 + 999);
 
   if (action == 'done') {
     await Db.instance.setEntry(habitId, today, 1);
-    msg = 'Marked done.';
   } else if (action == 'add') {
     final raw = (r.input ?? '').trim();
     final v = double.tryParse(raw.replaceAll(',', '.'));
     if (v == null) {
+      // Nothing saved: show the notification again with a hint.
       await n.repost(
-          h, shownId, raw.isEmpty ? 'Enter a number to add.' : '"$raw" is not a number. Use digits only.');
+          h, repostId, raw.isEmpty ? 'Enter a number to add.' : '"$raw" is not a number. Use digits only.');
       return;
     }
     await Db.instance.addToEntry(habitId, today, v);
-    final total = await progressTotal(h);
-    final scope = h.isPeriod ? h.periodLabel : 'today';
-    final cmp = h.type == HabitType.limit ? 'limit' : 'goal';
-    msg = 'Added ${fmt(v)}. Total $scope: ${fmt(total)} ($cmp ${fmt(h.target)} ${h.unit}).';
   } else if (action == 'note') {
     final text = (r.input ?? '').trim();
     if (text.isEmpty) {
-      await n.repost(h, shownId, 'Type a note first.');
+      await n.repost(h, repostId, 'Type a note first.');
       return;
     }
     await Db.instance.appendNote(habitId, today, text);
-    msg = 'Note saved.';
-  } else if (!stop) {
+  } else if (stop) {
+    await Db.instance.setPausedUntil(habitId, DateTime(today.year, today.month, today.day + 1));
+  } else {
     return;
   }
 
-  final met = !stop && await isGoalMet(h);
-  if (stop || met) {
-    if (stop) {
-      await Db.instance.setPausedUntil(habitId, DateTime(today.year, today.month, today.day + 1));
-    }
-    await n.syncReminders(h); // re-schedules with the pause applied; also clears the shown reminder
-    msg = stop ? 'Reminders paused until tomorrow.' : '$msg Goal reached - reminders paused.';
-    await n.feedback(h, msg);
-  } else {
-    await n.feedback(h, msg, replaceId: shownId); // replaces the reminder, so no buttons linger
+  if (stop || await isGoalMet(h)) {
+    await n.syncReminders(h); // pauses the remaining notifications for today / the period
   }
   dataChanged.value++;
 }
@@ -161,15 +157,11 @@ class Notifier {
     );
   }
 
-  Future<void> init() async {
-    if (_ready) return;
-    tz.initializeTimeZones();
-    try {
-      final info = await FlutterTimezone.getLocalTimezone();
-      tz.setLocalLocation(tz.getLocation(info.identifier));
-    } catch (_) {
-      // Falls back to UTC; reminder times may be off if this fails.
-    }
+  bool _pluginReady = false;
+
+  /// Quick part of the setup: enough to cancel or show notifications.
+  Future<void> _initPlugin() async {
+    if (_pluginReady) return;
     const settings = InitializationSettings(
       android: AndroidInitializationSettings('@mipmap/ic_launcher'),
     );
@@ -178,6 +170,19 @@ class Notifier {
       onDidReceiveNotificationResponse: handleNotificationResponse,
       onDidReceiveBackgroundNotificationResponse: notificationBackgroundHandler,
     );
+    _pluginReady = true;
+  }
+
+  Future<void> init() async {
+    if (_ready) return;
+    await _initPlugin();
+    tz.initializeTimeZones();
+    try {
+      final info = await FlutterTimezone.getLocalTimezone();
+      tz.setLocalLocation(tz.getLocation(info.identifier));
+    } catch (_) {
+      // Falls back to UTC; notification times may be off if this fails.
+    }
     _ready = true;
   }
 
@@ -193,17 +198,20 @@ class Notifier {
     }
   }
 
+  /// Notification title: category first, then the habit name.
+  String _title(Habit h) => h.categoryName.isEmpty ? h.name : '${h.categoryName} · ${h.name}';
+
   /// Short confirmation that disappears by itself after a few seconds.
   Future<void> feedback(Habit h, String msg, {int? replaceId}) async {
     await init();
-    await _plugin.show(replaceId ?? (h.id! * 1000 + 999), h.name, msg, _feedbackDetails,
+    await _plugin.show(replaceId ?? (h.id! * 1000 + 999), _title(h), msg, _feedbackDetails,
         payload: '${h.id}');
   }
 
   /// Shows the reminder again (with buttons) with a hint, e.g. after bad input.
   Future<void> repost(Habit h, int id, String body) async {
     await init();
-    await _plugin.show(id, h.name, body, _detailsFor(h), payload: '${h.id}');
+    await _plugin.show(id, _title(h), body, _detailsFor(h), payload: '${h.id}');
   }
 
   // Notification ids: habitId * 1000 + slot. Slot 999 is the confirmation message.
@@ -266,6 +274,7 @@ class Notifier {
   /// last notification asks you to open the app.
   Future<void> scheduleFor(Habit h, {DateTime? resumeOn}) async {
     await init();
+    await Db.instance.loadCategories();
     final id = h.id!;
     await cancelFor(id);
     if (h.remType == ReminderType.none) return;
@@ -280,7 +289,22 @@ class Notifier {
         ? 366
         : (h.remType == ReminderType.weekly ? 70 : (h.remType == ReminderType.daily ? 30 : 14));
     final times = _minutesOfDay(h);
-    const mode = AndroidScheduleMode.inexactAllowWhileIdle;
+    // Exact alarms keep notifications on time. If Android refuses them, fall back to inexact ones.
+    var mode = AndroidScheduleMode.exactAllowWhileIdle;
+    final title = _title(h);
+    final body = h.customText.isEmpty ? 'Time to check in' : h.customText;
+
+    Future<void> put(int notifId, String ttl, String text, tz.TZDateTime when, NotificationDetails details) async {
+      try {
+        await _plugin.zonedSchedule(notifId, ttl, text, when, details,
+            payload: '$id', androidScheduleMode: mode);
+      } on PlatformException {
+        mode = AndroidScheduleMode.inexactAllowWhileIdle;
+        await _plugin.zonedSchedule(notifId, ttl, text, when, details,
+            payload: '$id', androidScheduleMode: mode);
+      }
+    }
+
     final base = id * 1000;
     var slot = 0;
     tz.TZDateTime? last;
@@ -292,29 +316,19 @@ class Notifier {
         if (slot >= _maxAlarms) break;
         final t = tz.TZDateTime(tz.local, day.year, day.month, day.day, m ~/ 60, m % 60);
         if (!t.isAfter(now)) continue;
-        await _plugin.zonedSchedule(
-          base + slot,
-          h.name,
-          'Time to check in',
-          t,
-          _detailsFor(h),
-          payload: '$id',
-          androidScheduleMode: mode,
-        );
+        await put(base + slot, title, body, t, _detailsFor(h));
         slot++;
         last = t;
       }
     }
 
     if (last != null) {
-      await _plugin.zonedSchedule(
+      await put(
         base + 998,
         'Habits',
-        'Open the app to keep "${h.name}" reminders going.',
+        'Open the app to keep "${h.name}" notifications going.',
         last.add(const Duration(minutes: 1)),
         _noticeDetails,
-        payload: '$id',
-        androidScheduleMode: mode,
       );
     }
   }

@@ -86,6 +86,10 @@ class Habit {
   /// Index into habitPalette; -1 means pick one automatically from the id.
   final int colorIndex;
 
+  /// Category (maps to the habit's colour) and optional custom notification text.
+  final int categoryId;
+  final String customText;
+
   Habit({
     this.id,
     required this.name,
@@ -102,6 +106,8 @@ class Habit {
     this.remEndHour = 22,
     this.remEndMinute = 0,
     this.colorIndex = -1,
+    this.categoryId = 1,
+    this.customText = '',
   });
 
   Habit withId(int newId) => Habit(
@@ -120,6 +126,8 @@ class Habit {
         remEndHour: remEndHour,
         remEndMinute: remEndMinute,
         colorIndex: colorIndex,
+        categoryId: categoryId,
+        customText: customText,
       );
 
   String get reminderText {
@@ -145,8 +153,9 @@ class Habit {
 
   bool get isPeriod => isPeriodFreq(frequency);
 
-  Color get color =>
-      habitPalette[(colorIndex >= 0 ? colorIndex : (id ?? 0)) % habitPalette.length];
+  Color get color => categoryRegistry[categoryId]?.color ?? habitPalette[0];
+
+  String get categoryName => categoryRegistry[categoryId]?.name ?? '';
 
   bool get isNumeric => type == HabitType.target || type == HabitType.limit;
 
@@ -166,6 +175,8 @@ class Habit {
         'rem_end_hour': remEndHour,
         'rem_end_minute': remEndMinute,
         'color_index': colorIndex,
+        'category_id': categoryId,
+        'custom_text': customText,
       };
 
   factory Habit.fromMap(Map<String, Object?> m) {
@@ -179,6 +190,8 @@ class Habit {
       remEndHour: (m['rem_end_hour'] as int?) ?? 22,
       remEndMinute: (m['rem_end_minute'] as int?) ?? 0,
       colorIndex: (m['color_index'] as int?) ?? -1,
+      categoryId: (m['category_id'] as int?) ?? 1,
+      customText: (m['custom_text'] as String?) ?? '',
       remDays: remRaw.isEmpty ? <int>[] : remRaw.split(',').map(int.parse).toList(),
       id: m['id'] as int?,
       name: m['name'] as String,
@@ -295,3 +308,51 @@ class Habit {
     return '$freqText · $what';
   }
 }
+
+/// A category has a name and a colour; every habit belongs to one category.
+class Category {
+  final int? id;
+  final String name;
+  final int colorIndex;
+
+  Category({this.id, required this.name, required this.colorIndex});
+
+  Color get color => habitPalette[colorIndex % habitPalette.length];
+
+  Map<String, Object?> toMap() => <String, Object?>{
+        if (id != null) 'id': id,
+        'name': name,
+        'color_index': colorIndex,
+      };
+
+  factory Category.fromMap(Map<String, Object?> m) => Category(
+        id: m['id'] as int?,
+        name: m['name'] as String,
+        colorIndex: m['color_index'] as int,
+      );
+}
+
+/// A group lives inside a category; a habit can be in several groups.
+class HabitGroup {
+  final int? id;
+  final String name;
+  final int categoryId;
+
+  HabitGroup({this.id, required this.name, required this.categoryId});
+
+  Map<String, Object?> toMap() => <String, Object?>{
+        if (id != null) 'id': id,
+        'name': name,
+        'category_id': categoryId,
+      };
+
+  factory HabitGroup.fromMap(Map<String, Object?> m) => HabitGroup(
+        id: m['id'] as int?,
+        name: m['name'] as String,
+        categoryId: m['category_id'] as int,
+      );
+}
+
+/// Filled by Db.loadCategories(); lets Habit.color / Habit.categoryName look up
+/// their category without a database call.
+final Map<int, Category> categoryRegistry = <int, Category>{};
