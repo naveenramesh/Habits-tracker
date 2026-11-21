@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'categories_screen.dart';
 import 'db.dart';
 import 'models.dart';
 import 'notifications.dart';
@@ -24,7 +25,12 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
   late int remMinute;
   late int remEndHour;
   late int remEndMinute;
-  late int colorIndex;
+  late int categoryId;
+  late Set<int> groupIds;
+  late final TextEditingController customText;
+  List<Category> categories = [Category(id: 1, name: 'Basic', colorIndex: 1)];
+  List<HabitGroup> allGroups = [];
+  bool metaReady = false;
   late Set<int> remDays;
   late final TextEditingController remInterval;
   late final TextEditingController remDay;
@@ -44,8 +50,10 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
     remMinute = h?.remMinute ?? 0;
     remEndHour = h?.remEndHour ?? 22;
     remEndMinute = h?.remEndMinute ?? 0;
-    colorIndex = h == null ? 0 : (h.colorIndex >= 0 ? h.colorIndex : h.id! % habitPalette.length);
-    if (h == null) _pickUnusedColor();
+    categoryId = h?.categoryId ?? 1;
+    groupIds = <int>{};
+    customText = TextEditingController(text: h?.customText ?? '');
+    _loadMeta();
     remDays = (h != null && h.remType == ReminderType.weekly) ? h.remDays.toSet() : <int>{};
     remInterval = TextEditingController(text: '${h?.remInterval ?? 25}');
     remDay = TextEditingController(
@@ -61,14 +69,60 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
     unit.dispose();
     remInterval.dispose();
     remDay.dispose();
+    customText.dispose();
     super.dispose();
   }
 
-  /// New habits start with a colour no other habit uses yet.
-  Future<void> _pickUnusedColor() async {
-    final used = (await Db.instance.habits()).map((x) => x.color).toSet();
-    final free = habitPalette.indexWhere((c) => !used.contains(c));
-    if (free >= 0 && mounted) setState(() => colorIndex = free);
+  Future<void> _loadMeta() async {
+    try {
+      final cats = await Db.instance.loadCategories();
+      final grps = await Db.instance.groups();
+      final h = widget.habit;
+      final linked = (h == null || metaReady) ? null : await Db.instance.groupIdsFor(h.id!);
+      if (!mounted) return;
+      setState(() {
+        if (cats.isNotEmpty) categories = cats;
+        allGroups = grps;
+        if (linked != null) groupIds = linked;
+        if (!categories.any((c) => c.id == categoryId)) categoryId = categories.first.id!;
+        groupIds.removeWhere((id) => !grps.any((g) => g.id == id));
+        metaReady = true;
+      });
+    } catch (_) {
+      if (mounted) setState(() => metaReady = true);
+    }
+  }
+
+  Future<void> _manageCategories() async {
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => const CategoriesScreen()));
+    await _loadMeta();
+  }
+
+  /// Creates a group inside the currently selected category and selects it.
+  Future<void> _newGroup() async {
+    final ctl = TextEditingController();
+    final catName =
+        categories.firstWhere((c) => c.id == categoryId, orElse: () => categories.first).name;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('New group in $catName'),
+        content: TextField(
+          controller: ctl,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Group name'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Save')),
+        ],
+      ),
+    );
+    final name = ctl.text.trim();
+    if (ok != true || name.isEmpty) return;
+    final gid = await Db.instance.saveGroup(HabitGroup(name: name, categoryId: categoryId));
+    await _loadMeta();
+    if (mounted) setState(() => groupIds.add(gid));
   }
 
   bool get _needsTarget =>
@@ -96,11 +150,11 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
     var rDays = <int>[];
     var rInterval = 25;
     if (remType == ReminderType.weekly) {
-      if (remDays.isEmpty) return _snack('Pick at least one reminder day');
+      if (remDays.isEmpty) return _snack('Pick at least one notification day');
       rDays = remDays.toList()..sort();
     } else if (remType == ReminderType.monthly) {
       final day = int.tryParse(remDay.text.trim());
-      if (day == null || day < 1 || day > 28) return _snack('Reminder day must be 1-28');
+      if (day == null || day < 1 || day > 28) return _snack('Notification day must be 1-28');
       rDays = [day];
     } else if (remType == ReminderType.interval) {
       final m = int.tryParse(remInterval.text.trim());
@@ -109,7 +163,7 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
       final endMin = remEndHour * 60 + remEndMinute;
       if (endMin <= startMin) return _snack('"Until" must be later than "From"');
       if ((endMin - startMin) ~/ m + 1 > 120) {
-        return _snack('Too many reminders in that window. Use a longer interval or a shorter window.');
+        return _snack('Too many notifications in that window. Use a longer interval or a shorter window.');
       }
       rInterval = m;
     }
@@ -127,11 +181,13 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
       remMinute: remMinute,
       remEndHour: remEndHour,
       remEndMinute: remEndMinute,
-      colorIndex: colorIndex,
+      categoryId: categoryId,
+      customText: customText.text.trim(),
       remInterval: rInterval,
       remDays: rDays,
     );
     final id = await Db.instance.saveHabit(h);
+    await Db.instance.setHabitGroups(id, groupIds);
     if (remType != ReminderType.none) {
       final ok = await Notifier.instance.requestPermission();
       if (!ok && mounted) _snack('Notifications are blocked. Enable them in Android settings.');
@@ -239,26 +295,39 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          _dropdown<int>('Category', categoryId, {for (final c in categories) c.id!: c.name},
+              (v) => setState(() => categoryId = v)),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton.icon(
+              onPressed: _manageCategories,
+              icon: const Icon(Icons.palette_outlined, size: 18),
+              label: const Text('Manage categories and colours'),
+            ),
+          ),
+          const SizedBox(height: 8),
           TextField(
             controller: name,
             decoration: const InputDecoration(labelText: 'Name', border: OutlineInputBorder()),
           ),
           const SizedBox(height: 16),
+          const Text('Groups'),
+          const SizedBox(height: 6),
           Wrap(
-            spacing: 10,
-            runSpacing: 10,
+            spacing: 6,
             children: [
-              for (var i = 0; i < habitPalette.length; i++)
-                GestureDetector(
-                  onTap: () => setState(() => colorIndex = i),
-                  child: CircleAvatar(
-                    radius: 16,
-                    backgroundColor: habitPalette[i],
-                    child: colorIndex == i
-                        ? const Icon(Icons.check, size: 18, color: Colors.white)
-                        : null,
-                  ),
+              for (final g in allGroups)
+                FilterChip(
+                  label: Text(
+                      '${categories.firstWhere((c) => c.id == g.categoryId, orElse: () => categories.first).name} > ${g.name}'),
+                  selected: groupIds.contains(g.id),
+                  onSelected: (sel) => setState(() => sel ? groupIds.add(g.id!) : groupIds.remove(g.id!)),
                 ),
+              ActionChip(
+                avatar: const Icon(Icons.add, size: 18),
+                label: const Text('New group'),
+                onPressed: _newGroup,
+              ),
             ],
           ),
           const SizedBox(height: 16),
@@ -298,7 +367,20 @@ class _HabitFormScreenState extends State<HabitFormScreen> {
           const SizedBox(height: 24),
           const Divider(),
           const SizedBox(height: 8),
-          _dropdown<ReminderType>('Reminder', remType, reminderNames, (v) => setState(() => remType = v)),
+          _dropdown<ReminderType>(
+              'Notifications setup', remType, reminderNames, (v) => setState(() => remType = v)),
+          if (remType != ReminderType.none) ...[
+            const SizedBox(height: 12),
+            TextField(
+              controller: customText,
+              maxLength: 60,
+              decoration: const InputDecoration(
+                labelText: 'Custom message (optional)',
+                hintText: 'e.g. Rock on, steps counter!',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
           if (remType == ReminderType.weekly) ...[
             const SizedBox(height: 12),
             Wrap(
